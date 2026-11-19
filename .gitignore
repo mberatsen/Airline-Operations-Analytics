@@ -1,0 +1,22 @@
+# Datasets
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Credentials
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
