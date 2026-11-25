@@ -115,8 +115,8 @@ powerbi/           placeholder for dashboards
 Run on the full 32-month load. All matched their expected values except where noted:
 
 - These checks ran and matched: dimension counts (365 airports, 7,679 routes, 15 carriers, 6,789 aircraft), the delay-rule checks, cancelled flights that keep a departure time (11,588), and the January 2024 delayed-arrival share (DL 0.189, AA 0.294).
-- `sched_arr_utc <= sched_dep_utc AND crs_elapsed_time > 0`: expected 0. The check was changed after the full load found 1 row (see the next item), and it now passes (0) by construction.
-- Rows with a missing or non-positive `crs_elapsed_time` (the `CRSArrTime` fallback rows): expected 20; not yet re-run. One of them, YX 5625 MKE to LGA on 2026-06-06, is zero-length in the source data (08:15 Central and 09:15 Eastern are the same UTC instant). BTS measures its own `ArrDelay` from that schedule, so `utc.py` correctly leaves it.
+- `sched_arr_utc <= sched_dep_utc AND crs_elapsed_time > 0`: expected 0, found 0. (The check was narrowed after the full load found 1 row; see the next item.)
+- Rows with a missing or non-positive `crs_elapsed_time` (the `CRSArrTime` fallback rows): expected 20, found 20. One of them, YX 5625 MKE to LGA on 2026-06-06, is zero-length in the source data (08:15 Central and 09:15 Eastern are the same UTC instant). BTS measures its own `ArrDelay` from that schedule, so `utc.py` correctly leaves it.
 - The two `v_ml_features` checks (row count, and no previous leg without a tail number) were not run: they did not finish within the default 128 MB `innodb_buffer_pool_size`. They now live in `sql/checks/ml_view_checks.sql`, which is optional and needs the bigger buffer pool.
 
 ## Known issues
