@@ -30,6 +30,11 @@ def connect(database: Optional[str] = None) -> pymysql.Connection:
     )
 
 
+def _only_comments(stmt: str) -> bool:
+    """True when stmt has nothing but whitespace and '--' comment lines."""
+    return all(not ln.strip() or ln.strip().startswith("--") for ln in stmt.splitlines())
+
+
 def run_sql_file(conn, path: Path) -> None:
     """Execute a SQL file, splitting statements on a ';' at the end of a line."""
     statements, buf = [], []
@@ -42,8 +47,9 @@ def run_sql_file(conn, path: Path) -> None:
         statements.append("\n".join(buf))
     with conn.cursor() as cur:
         for stmt in statements:
-            if stmt.strip():
-                cur.execute(stmt)
+            if _only_comments(stmt):
+                continue
+            cur.execute(stmt)
     conn.commit()
 
 

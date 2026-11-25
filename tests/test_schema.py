@@ -50,3 +50,25 @@ def test_ml_prev_leg_null_without_tail_and_tie_break(test_db):
     assert got[ids[1]] == 10        # tie on time broken by flight_id
     assert got[ids[2]] is None      # no tail: not borrowed from other flights
     assert got[ids[3]] is None
+
+
+def test_ml_prev_leg_window_runs_before_completed_filter(test_db):
+    """A completed, B cancelled, C completed (same aircraft): C's previous leg is B."""
+    _seed(test_db)
+    with test_db.cursor() as cur:
+        cur.execute("DELETE FROM fact_flights")
+        for fn, dep, cancelled, ad in [(10, "15:00:00", 0, 7), (11, "17:00:00", 1, None),
+                                       (12, "19:00:00", 0, 3)]:
+            cur.execute(
+                "INSERT INTO fact_flights (date_key,carrier_code,flight_number,origin_code,dest_code,"
+                "route_id,aircraft_id,dep_time_block,status_id,is_cancelled,is_diverted,crs_dep_time,"
+                "dep_hour,arr_hour,sched_dep_utc,sched_arr_utc,arr_delay,arr_del15,distance) VALUES "
+                "(20240101,'AA',%s,'ORD','LAX',1,1,'0900-0959',1,%s,0,900,9,11,"
+                "%s,%s,%s,0,1744)",
+                (fn, cancelled, "2024-01-01 " + dep, "2024-01-01 " + dep, ad))
+    test_db.commit()
+    ids = {r[0]: r[1] for r in q(test_db, "SELECT flight_number, flight_id FROM fact_flights")}
+    got = dict(q(test_db, "SELECT flight_id, prev_leg_arr_delay FROM v_ml_features"))
+    assert ids[11] not in got                 # cancelled leg is filtered out
+    assert got[ids[10]] is None               # A: first leg of the tail
+    assert got[ids[12]] is None               # C: previous leg is B, whose arr_delay is NULL

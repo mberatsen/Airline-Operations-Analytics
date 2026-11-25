@@ -57,6 +57,8 @@ LEFT JOIN dim_cancellation cx ON cx.cancellation_code = f.cancellation_code;
 -- Features are known before departure; no actual times or dep_delay (no leakage).
 -- prev_leg_arr_delay is the same aircraft's previous leg, computed over ALL flights
 -- (the window runs before the completed-flight filter). NULL when the tail is unknown.
+-- The previous leg is the immediately preceding scheduled leg, including cancelled or diverted ones
+-- (their arr_delay is NULL), so prev_leg_arr_delay is NULL after a cancelled leg.
 -- Ties on sched_dep_utc are broken by flight_id. Target: arr_del15.
 CREATE OR REPLACE VIEW v_ml_features AS
 SELECT x.flight_id,
