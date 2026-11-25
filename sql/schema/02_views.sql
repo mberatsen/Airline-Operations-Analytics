@@ -56,7 +56,8 @@ LEFT JOIN dim_cancellation cx ON cx.cancellation_code = f.cancellation_code;
 -- One row per completed (not cancelled, not diverted) flight.
 -- Features are known before departure; no actual times or dep_delay (no leakage).
 -- prev_leg_arr_delay is the same aircraft's previous leg, computed over ALL flights
--- (the window runs before the completed-flight filter). Target: arr_del15.
+-- (the window runs before the completed-flight filter). NULL when the tail is unknown.
+-- Ties on sched_dep_utc are broken by flight_id. Target: arr_del15.
 CREATE OR REPLACE VIEW v_ml_features AS
 SELECT x.flight_id,
        x.full_date, x.`year`, x.`month`, x.day_of_week, x.is_weekend,
@@ -70,7 +71,10 @@ FROM (
            f.dep_hour, tb.day_part,
            f.carrier_code, f.origin_code, f.dest_code, f.route_id, f.distance,
            f.is_cancelled, f.is_diverted,
-           LAG(f.arr_delay) OVER (PARTITION BY f.aircraft_id ORDER BY f.sched_dep_utc) AS prev_leg_arr_delay,
+           CASE WHEN f.aircraft_id IS NULL THEN NULL
+                ELSE LAG(f.arr_delay) OVER (PARTITION BY f.aircraft_id
+                                            ORDER BY f.sched_dep_utc, f.flight_id)
+           END AS prev_leg_arr_delay,
            f.arr_del15
     FROM fact_flights f
     JOIN dim_date d ON d.date_key = f.date_key
