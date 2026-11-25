@@ -8,6 +8,12 @@ A pipeline that cleans US domestic flight records from the Bureau of Transportat
 - Size: 18,809,411 flights after cleaning (303,116 cancelled, 52,698 diverted, 4,070,423 arrived 15+ minutes late).
 - Raw CSVs go in `data/raw/`; they are not committed.
 
+## Getting the raw data
+
+- Source: BTS TranStats, "Reporting Carrier On-Time Performance (1987-present)", with all fields selected. Download one month at a time.
+- Save each month in `data/raw/` as `bts_flights_YYYY_MM.csv` (for example `bts_flights_2024_01.csv`). The loader and the verification step read the month from this file name, so keep the pattern exactly.
+- Disk space: the `fact_flights` table is about 7.7 GB and the MySQL data directory about 10 GB, plus the raw CSVs and the cleaned Parquet files.
+
 ## Schema
 
 ```mermaid
@@ -53,20 +59,21 @@ Rows and sizes (data + indexes, from `information_schema`):
 Prerequisites:
 
 - Python 3.9 and the packages in `requirements.txt` (`python -m venv .venv && .venv/bin/pip install -r requirements.txt`).
-- MySQL 8+ running locally. Create the database once:
-  `CREATE DATABASE airline_ops CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;`
+- MySQL 8+ running locally. The loader creates the database (`airline_ops`, or `--database` / `MYSQL_DATABASE`) if it does not exist, so the MySQL user needs the `CREATE` privilege.
 - A `.env` file copied from `.env.example` with the connection settings (it is git-ignored). The loader uses `LOAD DATA LOCAL INFILE`, so the server needs `local_infile` enabled: run `SET GLOBAL local_infile = 1;` as an admin, or set `local_infile=1` under `[mysqld]` in `my.cnf` to make it persistent. The loader turns it on for its own client connection (`local_infile=True` in `python/db.py`).
-- The raw BTS CSVs in `data/raw/`.
+- The raw BTS CSVs in `data/raw/` (see "Getting the raw data").
 
 Run in this order:
 
 ```bash
-.venv/bin/python python/build_timezones.py   # airport -> IANA time zone lookup
+.venv/bin/python python/build_timezones.py   # airport -> IANA time zone lookup (reads data/raw/*.csv)
 .venv/bin/python python/clean_data.py        # CSV -> Parquet with UTC columns
 .venv/bin/python python/load_mysql.py        # schema, dimensions, all months, verification
 ```
 
 `load_mysql.py` with no arguments drops and recreates all tables, so it is a full rebuild. Each month takes about 25-45 s and the dimensions about 20 s, so a full rebuild takes roughly 20-25 minutes. At the end it compares per-month counts (rows, cancelled, diverted, delayed) with `docs/cleaning_report.csv` and writes `docs/load_verification.csv`.
+
+`data/lookup/airport_timezones.csv` is committed, so step 1 only needs re-running when new airports appear in the raw data.
 
 To load specific months without a rebuild: `load_mysql.py --months 2025_11,2025_12`. Add `--rebuild` to drop the schema first.
 
@@ -76,6 +83,8 @@ Sanity checks, each with its expected result in a comment:
 mysql -h127.0.0.1 -uroot airline_ops < sql/checks/sanity_checks.sql
 ```
 
+`sql/checks/ml_view_checks.sql` holds two optional checks on `v_ml_features`. They scan the whole fact table with a window function and need `innodb_buffer_pool_size` of about 1 GB; on the default 128 MB they can wedge the server, so they are not part of `sanity_checks.sql`.
+
 Tests: `.venv/bin/pytest -v`
 
 ## Folder layout
@@ -83,7 +92,7 @@ Tests: `.venv/bin/pytest -v`
 ```
 python/            pipeline scripts (build_timezones, clean_data, load_mysql, dimensions, utc, db, lookups)
 sql/schema/        01_create_tables.sql, 02_views.sql
-sql/checks/        sanity_checks.sql
+sql/checks/        sanity_checks.sql, ml_view_checks.sql (optional, needs a bigger buffer pool)
 data/raw/          BTS CSVs (not committed)
 data/processed/    cleaned Parquet files (not committed)
 data/lookup/       BTS code lookups and airport time zones
@@ -106,8 +115,9 @@ powerbi/           placeholder for dashboards
 Run on the full 32-month load. All matched their expected values except where noted:
 
 - These checks ran and matched: dimension counts (365 airports, 7,679 routes, 15 carriers, 6,789 aircraft), the delay-rule checks, cancelled flights that keep a departure time (11,588), and the January 2024 delayed-arrival share (DL 0.189, AA 0.294).
-- `sched_arr_utc <= sched_dep_utc`: expected 0, found 1 row: YX 5625 MKE to LGA on 2026-06-06. Its scheduled elapsed time is missing, so the arrival comes from the `CRSArrTime` fallback, which gives a zero-length flight (08:15 Central and 09:15 Eastern are the same UTC instant).
-- The two `v_ml_features` checks (row count, and no previous leg without a tail number) were not run: they did not finish within the default 128 MB `innodb_buffer_pool_size`. They remain in `sanity_checks.sql`.
+- `sched_arr_utc <= sched_dep_utc AND crs_elapsed_time > 0`: expected 0. The check was changed after the full load found 1 row (see the next item), and it now passes (0) by construction.
+- Rows with a missing or non-positive `crs_elapsed_time` (the `CRSArrTime` fallback rows): expected 20; not yet re-run. One of them, YX 5625 MKE to LGA on 2026-06-06, is zero-length in the source data (08:15 Central and 09:15 Eastern are the same UTC instant). BTS measures its own `ArrDelay` from that schedule, so `utc.py` correctly leaves it.
+- The two `v_ml_features` checks (row count, and no previous leg without a tail number) were not run: they did not finish within the default 128 MB `innodb_buffer_pool_size`. They now live in `sql/checks/ml_view_checks.sql`, which is optional and needs the bigger buffer pool.
 
 ## Known issues
 
