@@ -108,13 +108,17 @@ def build_dim_route(flights: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["Origin", "Dest", "FlightDate", "Distance"], kind="mergesort")
     last = df.drop_duplicates(["Origin", "Dest"], keep="last").reset_index(drop=True)
     miles = last["Distance"].astype("float64").round().astype("int64")
+    bands = read_lookup("L_DISTANCE_GROUP_250")
+    labels = dict(zip(bands["Code"].astype(int), bands["Description"]))
+    group = ((miles // 250) + 1).clip(upper=11).astype("int64")
     return pd.DataFrame({
         "route_id": range(1, len(last) + 1),
         "origin_code": last["Origin"],
         "dest_code": last["Dest"],
         "route_label": last["Origin"] + "-" + last["Dest"],
         "distance_miles": miles,
-        "distance_group": ((miles // 250) + 1).clip(upper=11).astype("int64"),
+        "distance_group": group,
+        "distance_group_label": group.map(labels),
     })
 
 

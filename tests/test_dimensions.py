@@ -78,6 +78,7 @@ def test_dim_route_latest_distance():
                       "FlightDate": pd.to_datetime(["2024-04-07","2026-04-05"])})
     r = build_dim_route(f).iloc[0]
     assert (r.route_label, r.distance_miles, r.distance_group) == ("AGS-PHL", 584, 3)
+    assert r.distance_group_label == "500-749 Miles"
 
 
 def test_dim_route_ids_order_and_tie():
@@ -86,7 +87,8 @@ def test_dim_route_ids_order_and_tie():
                       "FlightDate": pd.to_datetime(["2024-01-01"] * 3)})
     r = build_dim_route(f)
     assert list(r.columns) == ["route_id", "origin_code", "dest_code",
-                               "route_label", "distance_miles", "distance_group"]
+                               "route_label", "distance_miles", "distance_group",
+                               "distance_group_label"]
     assert list(r.route_id) == [1, 2]
     assert list(r.route_label) == ["ATL-LAX", "LAX-ATL"]
     assert r.distance_miles.iloc[0] == 1947          # tie on date -> max distance

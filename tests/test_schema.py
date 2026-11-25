@@ -22,7 +22,7 @@ def _seed(c):
         "INSERT INTO dim_date (date_key,full_date,`year`,`quarter`,quarter_label,`month`,month_name,month_short,`year_month`,day_of_month,day_of_week,weekday_name,is_weekend,iso_week) VALUES (20240101,'2024-01-01',2024,1,'Q1',1,'January','Jan','2024-01',1,1,'Monday',0,1)",
         "INSERT INTO dim_carrier VALUES ('AA','American')",
         "INSERT INTO dim_airport VALUES ('ORD','O','Chicago','IL','Illinois','America/Chicago'),('LAX','L','LA','CA','California','America/Los_Angeles')",
-        "INSERT INTO dim_route VALUES (1,'ORD','LAX','ORD-LAX',1744,'Group 7')",
+        "INSERT INTO dim_route VALUES (1,'ORD','LAX','ORD-LAX',1744,7,'1500-1749 Miles')",
         "INSERT INTO dim_aircraft VALUES (1,'N1','AA','2024-01-01','2024-01-01',3)",
         "INSERT INTO dim_time_block VALUES ('0900-0959','x',9,9,'Morning')",
         "INSERT INTO dim_status VALUES (1,'On Time',1)",
