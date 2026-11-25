@@ -197,27 +197,35 @@ def clean_file(
     return df, log
 
 
+PARTIAL_MIN_FLIGHTS = 200
+
+
 def save_timezone_check(checks, full_run, check_path):
-    """Combine monthly arrival checks per airport, save, and fail under 99%.
+    """Combine arrival checks per airport and fail under 99%.
 
-    A partial run (some files skipped or filtered out) leaves the existing
-    file untouched, since one month alone would give misleading percentages.
+    Full run: save the combined table to check_path, then fail for any airport
+    under 99%. Partial run (some files skipped or filtered out): the existing
+    file is left untouched, since a few months alone would give misleading
+    percentages, but airports with at least 200 flights in this run are still
+    checked against the 99% limit.
     """
-    if not full_run:
-        print("Time zone check NOT updated: this run did not clean every raw file.")
-        return None
-
     tzc = pd.concat(checks).groupby("Dest", as_index=False)[["Flights", "Matched"]].sum()
     tzc["Match_Percent"] = (100.0 * tzc["Matched"] / tzc["Flights"].where(tzc["Flights"] > 0)).round(2)
     tzc = tzc.sort_values("Match_Percent")
-    tzc.to_csv(check_path, index=False)
-    print(f"Time zone check saved to: {check_path}")
 
-    bad = tzc[tzc["Match_Percent"] < 99]
+    if full_run:
+        tzc.to_csv(check_path, index=False)
+        print(f"Time zone check saved to: {check_path}")
+        judged = tzc
+    else:
+        print("Time zone check file NOT updated: this run did not clean every raw file.")
+        judged = tzc[tzc["Flights"] >= PARTIAL_MIN_FLIGHTS]
+
+    bad = judged[judged["Match_Percent"] < 99]
     if len(bad):
         listing = ", ".join(f"{r.Dest} ({r.Match_Percent}%)" for r in bad.itertuples())
         raise RuntimeError(f"Arrival time check under 99% for: {listing}")
-    return tzc
+    return tzc if full_run else None
 
 
 def main():
