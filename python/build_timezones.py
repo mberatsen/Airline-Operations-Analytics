@@ -15,7 +15,7 @@ from lookups import LOOKUP_DIR, ROOT
 OPENFLIGHTS_PATH = LOOKUP_DIR / "openflights_airports.dat"
 OVERRIDES_PATH = LOOKUP_DIR / "airport_timezone_overrides.csv"
 OUTPUT_PATH = LOOKUP_DIR / "airport_timezones.csv"
-FLIGHTS_DIR = ROOT / "data" / "processed" / "flights"
+RAW_DIR = ROOT / "data" / "raw"
 
 
 def parse_openflights(path: Path) -> pd.DataFrame:
@@ -64,9 +64,20 @@ def load_timezones() -> Dict[str, str]:
     return dict(zip(df["airport_code"], df["timezone"]))
 
 
-def main() -> None:
-    flights = pd.read_parquet(FLIGHTS_DIR, columns=["Origin", "Dest"])
-    codes = set(flights["Origin"].astype(str)) | set(flights["Dest"].astype(str))
+def airport_codes_from_raw(raw_dir: Path) -> set:
+    """Every Origin and Dest code found in the raw BTS CSVs of raw_dir."""
+    files = sorted(Path(raw_dir).glob("*.csv"))
+    if not files:
+        raise FileNotFoundError("No CSV files in %s" % raw_dir)
+    codes = set()
+    for f in files:
+        part = pd.read_csv(f, usecols=["Origin", "Dest"], dtype="category")
+        codes |= set(part["Origin"].astype(str)) | set(part["Dest"].astype(str))
+    return codes
+
+
+def main(raw_dir: Path = RAW_DIR) -> None:
+    codes = airport_codes_from_raw(raw_dir)
     openflights = parse_openflights(OPENFLIGHTS_PATH)
     overrides = pd.read_csv(OVERRIDES_PATH, dtype=str, keep_default_na=False)
     table = build_timezone_table(codes, openflights, overrides)

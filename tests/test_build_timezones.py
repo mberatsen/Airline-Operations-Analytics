@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from build_timezones import build_timezone_table, parse_openflights
+from build_timezones import airport_codes_from_raw, build_timezone_table, parse_openflights
 
 
 def test_parse_openflights_reads_iata_and_tz(tmp_path):
@@ -22,3 +22,14 @@ def test_build_fails_on_missing_airport():
     of = pd.DataFrame({"airport_code": ["ORD"], "timezone": ["America/Chicago"]})
     with pytest.raises(ValueError, match="No time zone for airports: XWA, ZZZ"):
         build_timezone_table(["ORD", "ZZZ", "XWA"], of, pd.DataFrame(columns=["airport_code", "timezone", "note"]))
+
+
+def test_airport_codes_from_raw_reads_origin_and_dest(tmp_path):
+    (tmp_path / "a.csv").write_text("Origin,Dest,Other\nORD,LAX,1\nLAX,ORD,2\n")
+    (tmp_path / "b.csv").write_text("Origin,Dest,Other\nDEN,JFK,3\n")
+    assert airport_codes_from_raw(tmp_path) == {"ORD", "LAX", "DEN", "JFK"}
+
+
+def test_airport_codes_from_raw_requires_files(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        airport_codes_from_raw(tmp_path)
