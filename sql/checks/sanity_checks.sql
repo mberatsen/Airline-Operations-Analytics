@@ -21,6 +21,9 @@ SELECT 'dim_carrier' AS check_name, COUNT(*) AS result FROM dim_carrier;
 -- Expected: 6789
 SELECT 'dim_aircraft' AS check_name, COUNT(*) AS result FROM dim_aircraft;
 
+-- WARNING: the two v_ml_features checks below need innodb_buffer_pool_size of about 1 GB.
+-- On the default 128 MB they can run for a very long time and wedge the server.
+
 -- Expected: 18453597 (18,809,411 flights - 303,116 cancelled - 52,698 diverted)
 SELECT 'v_ml_features_rows' AS check_name, COUNT(*) AS result FROM v_ml_features;
 

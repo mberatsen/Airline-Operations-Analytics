@@ -55,7 +55,7 @@ Prerequisites:
 - Python 3.9 and the packages in `requirements.txt` (`python -m venv .venv && .venv/bin/pip install -r requirements.txt`).
 - MySQL 8+ running locally. Create the database once:
   `CREATE DATABASE airline_ops CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;`
-- A `.env` file copied from `.env.example` with the connection settings (it is git-ignored). The loader uses `LOAD DATA LOCAL INFILE`, so the server needs `local_infile` enabled.
+- A `.env` file copied from `.env.example` with the connection settings (it is git-ignored). The loader uses `LOAD DATA LOCAL INFILE`, so the server needs `local_infile` enabled: run `SET GLOBAL local_infile = 1;` as an admin, or set `local_infile=1` under `[mysqld]` in `my.cnf` to make it persistent. The loader turns it on for its own client connection (`local_infile=True` in `python/db.py`).
 - The raw BTS CSVs in `data/raw/`.
 
 Run in this order:
@@ -66,7 +66,7 @@ Run in this order:
 .venv/bin/python python/load_mysql.py        # schema, dimensions, all months, verification
 ```
 
-`load_mysql.py` with no arguments drops and recreates all tables, so it is a full rebuild. Each month takes about 25-45 s and the dimensions about 20 s, so a full rebuild takes roughly 15-20 minutes. At the end it compares per-month counts (rows, cancelled, diverted, delayed) with `docs/cleaning_report.csv` and writes `docs/load_verification.csv`.
+`load_mysql.py` with no arguments drops and recreates all tables, so it is a full rebuild. Each month takes about 25-45 s and the dimensions about 20 s, so a full rebuild takes roughly 20-25 minutes. At the end it compares per-month counts (rows, cancelled, diverted, delayed) with `docs/cleaning_report.csv` and writes `docs/load_verification.csv`.
 
 To load specific months without a rebuild: `load_mysql.py --months 2025_11,2025_12`. Add `--rebuild` to drop the schema first.
 
@@ -105,7 +105,7 @@ powerbi/           placeholder for dashboards
 
 Run on the full 32-month load. All matched their expected values except where noted:
 
-- Completed-flight, dimension-count, delay-rule and cancelled-after-pushback checks matched (e.g. 11,588 cancelled flights keep a departure time; January 2024 delayed-arrival share DL 0.189, AA 0.294).
+- These checks ran and matched: dimension counts (365 airports, 7,679 routes, 15 carriers, 6,789 aircraft), the delay-rule checks, cancelled flights that keep a departure time (11,588), and the January 2024 delayed-arrival share (DL 0.189, AA 0.294).
 - `sched_arr_utc <= sched_dep_utc`: expected 0, found 1 row: YX 5625 MKE to LGA on 2026-06-06. Its scheduled elapsed time is missing, so the arrival comes from the `CRSArrTime` fallback, which gives a zero-length flight (08:15 Central and 09:15 Eastern are the same UTC instant).
 - The two `v_ml_features` checks (row count, and no previous leg without a tail number) were not run: they did not finish within the default 128 MB `innodb_buffer_pool_size`. They remain in `sanity_checks.sql`.
 
