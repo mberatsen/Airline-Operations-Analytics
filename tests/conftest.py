@@ -178,3 +178,18 @@ def test_db():
         yield conn
     finally:
         conn.close()
+
+
+@pytest.fixture
+def tiny_month(tiny_flights, tmp_path):
+    """tiny_flights cleaned like clean_file (tails, UTC columns), written as a month Parquet."""
+    from build_timezones import load_timezones
+    from clean_data import normalize_tail
+    from utc import add_utc_columns
+
+    df = tiny_flights.copy()
+    df["Tail_Number"] = normalize_tail(df["Tail_Number"])
+    df, _ = add_utc_columns(df, load_timezones())
+    path = tmp_path / "bts_flights_2024_01.parquet"
+    df.to_parquet(path, index=False)
+    return path
