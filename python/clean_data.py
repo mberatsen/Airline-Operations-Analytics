@@ -197,6 +197,29 @@ def clean_file(
     return df, log
 
 
+def save_timezone_check(checks, full_run, check_path):
+    """Combine monthly arrival checks per airport, save, and fail under 99%.
+
+    A partial run (some files skipped or filtered out) leaves the existing
+    file untouched, since one month alone would give misleading percentages.
+    """
+    if not full_run:
+        print("Time zone check NOT updated: this run did not clean every raw file.")
+        return None
+
+    tzc = pd.concat(checks).groupby("Dest", as_index=False)[["Flights", "Matched"]].sum()
+    tzc["Match_Percent"] = (100.0 * tzc["Matched"] / tzc["Flights"].where(tzc["Flights"] > 0)).round(2)
+    tzc = tzc.sort_values("Match_Percent")
+    tzc.to_csv(check_path, index=False)
+    print(f"Time zone check saved to: {check_path}")
+
+    bad = tzc[tzc["Match_Percent"] < 99]
+    if len(bad):
+        listing = ", ".join(f"{r.Dest} ({r.Match_Percent}%)" for r in bad.itertuples())
+        raise RuntimeError(f"Arrival time check under 99% for: {listing}")
+    return tzc
+
+
 def main():
     args = sys.argv[1:]
     force = "--force" in args
@@ -248,23 +271,16 @@ def main():
         report = pd.concat([old, report], ignore_index=True)
 
     report = report.sort_values("File")
+    for col in ["DST_Nonexistent", "DST_Ambiguous", "Arrival_Fallback"]:
+        report[col] = report[col].astype("Int64")
     report.to_csv(report_path, index=False)
 
     print(f"\nTotal clean rows (this run): {sum(l['Rows_Clean'] for l in logs):,}")
     print(f"Report saved to: {report_path}")
 
-    # 12. Time zone check: combine months per airport, save, fail under 99%
-    tzc = pd.concat(checks).groupby("Dest", as_index=False)[["Flights", "Matched"]].sum()
-    tzc["Match_Percent"] = (100.0 * tzc["Matched"] / tzc["Flights"].where(tzc["Flights"] > 0)).round(2)
-    tzc = tzc.sort_values("Match_Percent")
-    check_path = DOCS / "timezone_check.csv"
-    tzc.to_csv(check_path, index=False)
-    print(f"Time zone check saved to: {check_path}")
-
-    bad = tzc[tzc["Match_Percent"] < 99]
-    if len(bad):
-        listing = ", ".join(f"{r.Dest} ({r.Match_Percent}%)" for r in bad.itertuples())
-        raise RuntimeError(f"Arrival time check under 99% for: {listing}")
+    # 12. Time zone check: only meaningful when this run cleaned every raw file
+    all_raw = sorted(RAW.glob("*.csv"))
+    save_timezone_check(checks, len(logs) == len(all_raw), DOCS / "timezone_check.csv")
 
 
 if __name__ == "__main__":
