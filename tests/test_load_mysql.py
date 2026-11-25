@@ -76,7 +76,7 @@ def test_verify_and_main(tiny_month, tmp_path):
                   "Cancelled": [1], "Diverted": [1], "Delayed_15": [1]}).to_csv(report, index=False)
     out = tmp_path / "ver.csv"
     try:
-        main(["--database", "airline_ops_test", "--months", "2024_01",
+        main(["--database", "airline_ops_test", "--months", "2024_01", "--rebuild",
               "--flights-dir", str(tiny_month.parent), "--report", str(report),
               "--output", str(out)])
     except Exception as exc:
