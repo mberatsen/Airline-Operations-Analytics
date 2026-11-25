@@ -93,3 +93,61 @@ def test_verify_and_main(tiny_month, tmp_path):
             verify(conn, bad)
     finally:
         conn.close()
+
+
+def _two_months(tiny_month, tmp_path):
+    """tiny_month (Jan) plus a Feb copy; returns (flights_dir, report_csv)."""
+    jan = pd.read_parquet(tiny_month)
+    feb = jan.copy()
+    shift = pd.DateOffset(months=1)
+    feb["FlightDate"] = feb["FlightDate"] + shift
+    for c in ("SchedDepUTC", "SchedArrUTC", "ActualDepUTC", "ActualArrUTC"):
+        feb[c] = feb[c] + shift
+    feb.to_parquet(tiny_month.parent / "bts_flights_2024_02.parquet", index=False)
+    report = tmp_path / "report2.csv"
+    pd.DataFrame({"File": ["bts_flights_2024_01.csv", "bts_flights_2024_02.csv"],
+                  "Rows_Clean": [6, 6], "Cancelled": [1, 1], "Diverted": [1, 1],
+                  "Delayed_15": [1, 1]}).to_csv(report, index=False)
+    return tiny_month.parent, report
+
+
+def test_main_months_rerun_keeps_other_months(tiny_month, tmp_path):
+    import db
+    flights_dir, report = _two_months(tiny_month, tmp_path)
+    args = ["--database", "airline_ops_test", "--flights-dir", str(flights_dir),
+            "--report", str(report), "--output", str(tmp_path / "v.csv")]
+    try:
+        main(args)
+    except Exception as exc:
+        if "Can't connect" in str(exc):
+            pytest.skip("MySQL not available")
+        raise
+    main(args + ["--months", "2024_01"])
+    conn = db.connect("airline_ops_test")
+    try:
+        got = dict(q(conn, "SELECT date_key DIV 100, COUNT(*) FROM fact_flights GROUP BY 1"))
+        assert got == {202401: 6, 202402: 6}
+    finally:
+        conn.close()
+
+
+def test_months_without_dimensions_raises_clear_error(test_db):
+    from load_mysql import read_id_maps
+    with pytest.raises(RuntimeError, match="without --months"):
+        read_id_maps(test_db)
+
+
+def test_failed_reload_rolls_back(test_db, tiny_month, monkeypatch):
+    import load_mysql
+    rid, aid = load_dimensions(test_db, tiny_month.parent)
+    load_month(test_db, tiny_month, rid, aid)
+
+    def bad_csv(df, path):
+        df = df.copy()
+        df["route_id"] = 999999  # violates fk_fact_route
+        orig(df, path)
+    orig = load_mysql.write_mysql_csv
+    monkeypatch.setattr(load_mysql, "write_mysql_csv", bad_csv)
+    with pytest.raises(Exception):
+        load_month(test_db, tiny_month, rid, aid)
+    assert q(test_db, "SELECT COUNT(*) FROM fact_flights")[0][0] == 6

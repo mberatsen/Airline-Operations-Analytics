@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import pymysql
 
 import db
 from build_timezones import load_timezones
@@ -129,6 +130,22 @@ def load_dimensions(conn, flights_dir: Path) -> Tuple[Dict[Tuple[str, str], int]
     return route_ids, aircraft_ids
 
 
+def read_id_maps(conn) -> Tuple[Dict[Tuple[str, str], int], Dict[str, int]]:
+    """Read the route and aircraft id maps back from an already-loaded database."""
+    hint = "Run without --months (or with --rebuild) first to build the dimensions."
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT origin_code, dest_code, route_id FROM dim_route")
+            routes = {(o, d): int(i) for o, d, i in cur.fetchall()}
+            cur.execute("SELECT tail_number, aircraft_id FROM dim_aircraft")
+            aircraft = {t: int(i) for t, i in cur.fetchall()}
+    except pymysql.err.ProgrammingError as exc:
+        raise RuntimeError("Dimension tables are missing (%s). %s" % (exc, hint))
+    if not routes or not aircraft:
+        raise RuntimeError("dim_route / dim_aircraft are empty. " + hint)
+    return routes, aircraft
+
+
 def to_fact_frame(df: pd.DataFrame, route_ids, aircraft_ids) -> pd.DataFrame:
     """Map a cleaned month to fact_flights columns (without flight_id)."""
     origin = df["Origin"].astype(str).reset_index(drop=True)
@@ -141,13 +158,14 @@ def to_fact_frame(df: pd.DataFrame, route_ids, aircraft_ids) -> pd.DataFrame:
     if route_id.isna().any():
         bad = route_id.isna().to_numpy()
         pairs = sorted(set(zip(origin[bad], dest[bad])))[:5]
-        raise ValueError("Route not in dim_route: %s" % ", ".join("%s-%s" % p for p in pairs))
+        raise ValueError("Route not in dim_route: %s. A full rebuild is needed (run without --months, or with --rebuild)." % ", ".join("%s-%s" % p for p in pairs))
 
     tail = df["Tail_Number"].astype("string").reset_index(drop=True)
     aircraft_id = tail.map(aircraft_ids)
     unknown = tail.notna() & aircraft_id.isna()
     if unknown.any():
-        raise ValueError("Tail number not in dim_aircraft: %s" %
+        raise ValueError("Tail number not in dim_aircraft: %s. A full rebuild is needed "
+                         "(run without --months, or with --rebuild)." %
                          ", ".join(sorted(set(tail[unknown].astype(str)))[:5]))
 
     status = df["FlightStatus"].astype(str).map(STATUS_IDS)
@@ -261,8 +279,10 @@ def verify(conn, report_csv: Path, months: Optional[Sequence[str]] = None) -> pd
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--database", default=None, help="default: MYSQL_DATABASE from .env")
+    ap.add_argument("--database", default=None, help="default: airline_ops")
     ap.add_argument("--months", default=None, help="comma list like 2024_01,2024_02 (default all)")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="with --months: drop and rebuild the schema and dimensions first")
     ap.add_argument("--flights-dir", default=str(FLIGHTS_DIR))
     ap.add_argument("--report", default=str(CLEANING_REPORT))
     ap.add_argument("--output", default=str(VERIFICATION_CSV))
@@ -276,16 +296,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     conn = db.connect(args.database or "airline_ops")
     try:
-        db.apply_schema(conn)
-        t0 = time.time()
-        route_ids, aircraft_ids = load_dimensions(conn, flights_dir)
-        print("dimensions loaded in %.1fs (%d routes, %d aircraft)" %
-              (time.time() - t0, len(route_ids), len(aircraft_ids)))
+        if months is None or args.rebuild:
+            db.apply_schema(conn)
+            t0 = time.time()
+            route_ids, aircraft_ids = load_dimensions(conn, flights_dir)
+            print("dimensions loaded in %.1fs (%d routes, %d aircraft)" %
+                  (time.time() - t0, len(route_ids), len(aircraft_ids)))
+            verify_months = months
+        else:
+            route_ids, aircraft_ids = read_id_maps(conn)
+            verify_months = months
         for f in files:
             t = time.time()
             n = load_month(conn, f, route_ids, aircraft_ids)
             print("%s: %d rows in %.1fs" % (f.name, n, time.time() - t), flush=True)
-        result = verify(conn, Path(args.report), months)
+        result = verify(conn, Path(args.report), verify_months)
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         result.to_csv(args.output, index=False)
         print("verified %d month(s); wrote %s" % (len(result), args.output))
