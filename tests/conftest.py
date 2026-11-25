@@ -145,3 +145,36 @@ def _build():
 @pytest.fixture
 def tiny_flights():
     return _build()
+
+
+TEST_DB = "airline_ops_test"
+
+
+def q(conn, sql, *params):
+    """Run a query and return fetchall() as a list of tuples."""
+    with conn.cursor() as cur:
+        cur.execute(sql, params or None)
+        return list(cur.fetchall())
+
+
+@pytest.fixture
+def test_db():
+    """Connection to a freshly re-applied schema in airline_ops_test."""
+    import db
+
+    try:
+        admin = db.connect("mysql")
+    except Exception as exc:  # MySQL not reachable or bad credentials
+        pytest.skip("MySQL not available: %s" % exc)
+    try:
+        with admin.cursor() as cur:
+            cur.execute("CREATE DATABASE IF NOT EXISTS `%s` "
+                        "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci" % TEST_DB)
+    finally:
+        admin.close()
+    conn = db.connect(TEST_DB)
+    try:
+        db.apply_schema(conn)
+        yield conn
+    finally:
+        conn.close()
