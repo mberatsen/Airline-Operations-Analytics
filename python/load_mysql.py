@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import pymysql
+from dotenv import load_dotenv
 
 import db
 from build_timezones import load_timezones
@@ -63,6 +64,8 @@ _DATETIMES = {
 
 
 def _db_value(v):
+    # Timestamps become dates on purpose: only dimension tables go through here
+    # (dim_date, dim_aircraft first/last flight date). Fact datetimes use the CSV path.
     if v is None or v is pd.NA or v is pd.NaT:
         return None
     if isinstance(v, float) and np.isnan(v):
@@ -76,6 +79,29 @@ def _db_value(v):
     if isinstance(v, np.bool_):
         return bool(v)
     return v
+
+
+def resolve_database(name: Optional[str] = None) -> str:
+    """Database name: argument, else MYSQL_DATABASE from .env, else airline_ops."""
+    load_dotenv(ROOT / ".env")
+    name = name or os.getenv("MYSQL_DATABASE") or "airline_ops"
+    if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+        raise ValueError("Invalid database name %r: use letters, digits and underscores only." % name)
+    return name
+
+
+def connect_database(name: Optional[str] = None):
+    """Connect, creating the database first if it does not exist."""
+    name = resolve_database(name)
+    admin = db.connect("mysql")
+    try:
+        with admin.cursor() as cur:
+            cur.execute("CREATE DATABASE IF NOT EXISTS `%s` "
+                        "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci" % name)
+        admin.commit()
+    finally:
+        admin.close()
+    return db.connect(name)
 
 
 def insert_dim(conn, table: str, df: pd.DataFrame) -> None:
@@ -207,9 +233,13 @@ def _sql_string(path: Path) -> str:
 
 def load_month(conn, parquet_path: Path, route_ids, aircraft_ids) -> int:
     """Replace one month in fact_flights (DELETE + LOAD DATA in one transaction)."""
+    m = re.fullmatch(r"bts_flights_(\d{4})_(\d{2})\.parquet", Path(parquet_path).name)
+    if not m:
+        raise ValueError("Cannot read the month from %r: expected bts_flights_YYYY_MM.parquet"
+                         % Path(parquet_path).name)
+    lo, hi = int(m.group(1) + m.group(2) + "01"), int(m.group(1) + m.group(2) + "31")
     df = pd.read_parquet(parquet_path)
     fact = to_fact_frame(df, route_ids, aircraft_ids)
-    lo, hi = int(fact["date_key"].min()), int(fact["date_key"].max())
     fd, tmp = tempfile.mkstemp(suffix=".csv", prefix="fact_")
     os.close(fd)
     tmp_path = Path(tmp)
@@ -252,12 +282,20 @@ def verify(conn, report_csv: Path, months: Optional[Sequence[str]] = None) -> pd
     rep = pd.read_csv(report_csv)
     rep["Month"] = rep["File"].str.extract(r"(\d{4}_\d{2})")[0]
     if months:
+        missing = sorted(set(months) - set(rep["Month"]))
+        if missing:
+            raise ValueError("Month(s) not in the cleaning report: %s" % ", ".join(missing))
         rep = rep[rep["Month"].isin(list(months))]
     with conn.cursor() as cur:
         cur.execute("SELECT date_key DIV 100, COUNT(*), SUM(is_cancelled), SUM(is_diverted), "
                     "SUM(status_id = %s) FROM fact_flights GROUP BY date_key DIV 100",
                     (STATUS_IDS["Delayed"],))
         got = {"%04d_%02d" % divmod(int(r[0]), 100): [int(x) for x in r[1:]] for r in cur.fetchall()}
+    if not months:
+        extra = sorted(set(got) - set(rep["Month"]))
+        if extra:
+            raise ValueError("Month(s) in the database but not in the cleaning report: %s"
+                             % ", ".join(extra))
     rows = []
     for _, r in rep.iterrows():
         g = got.get(r["Month"], [0, 0, 0, 0])
@@ -294,7 +332,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if months and len(files) != len(months):
         raise SystemExit("Missing Parquet files for some of: %s" % ", ".join(months))
 
-    conn = db.connect(args.database or "airline_ops")
+    conn = connect_database(args.database)
     try:
         if months is None or args.rebuild:
             db.apply_schema(conn)

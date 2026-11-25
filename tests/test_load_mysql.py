@@ -3,8 +3,8 @@ import pytest
 
 from conftest import q
 from dimensions import build_dim_airport
-from load_mysql import (insert_dim, load_dimensions, load_month, main,
-                        to_fact_frame, verify, write_mysql_csv)
+from load_mysql import (connect_database, insert_dim, load_dimensions, load_month,
+                        main, resolve_database, to_fact_frame, verify, write_mysql_csv)
 from lookups import parse_airport_description, read_lookup
 
 
@@ -151,3 +151,80 @@ def test_failed_reload_rolls_back(test_db, tiny_month, monkeypatch):
     with pytest.raises(Exception):
         load_month(test_db, tiny_month, rid, aid)
     assert q(test_db, "SELECT COUNT(*) FROM fact_flights")[0][0] == 6
+
+
+def test_resolve_database_name(monkeypatch):
+    monkeypatch.setenv("MYSQL_DATABASE", "from_env")
+    assert resolve_database("explicit") == "explicit"
+    assert resolve_database(None) == "from_env"
+    monkeypatch.delenv("MYSQL_DATABASE")
+    monkeypatch.setattr("load_mysql.load_dotenv", lambda *a, **k: None)
+    assert resolve_database(None) == "airline_ops"
+
+
+@pytest.mark.parametrize("bad", ["a;b", "a-b", "x`y", "a b"])
+def test_resolve_database_rejects_bad_names(bad):
+    with pytest.raises(ValueError, match="database name"):
+        resolve_database(bad)
+
+
+def test_connect_database_creates_missing_database():
+    name = "airline_ops_test_create"
+    try:
+        conn = connect_database(name)
+    except Exception as exc:
+        if "Can't connect" in str(exc) or "Access denied" in str(exc):
+            pytest.skip("MySQL not available")
+        raise
+    try:
+        assert q(conn, "SELECT DATABASE()")[0][0] == name
+        with conn.cursor() as cur:
+            cur.execute("DROP DATABASE `%s`" % name)
+    finally:
+        conn.close()
+
+
+def test_reload_removes_rows_missing_from_new_file(test_db, tiny_month, tmp_path):
+    rid, aid = load_dimensions(test_db, tiny_month.parent)
+    load_month(test_db, tiny_month, rid, aid)
+    df = pd.read_parquet(tiny_month)
+    newdir = tmp_path / "v2"
+    newdir.mkdir()
+    new = newdir / tiny_month.name
+    df[df["FlightDate"] != pd.Timestamp("2024-01-01")].to_parquet(new, index=False)
+    assert load_month(test_db, new, rid, aid) == 5
+    assert q(test_db, "SELECT COUNT(*) FROM fact_flights WHERE date_key = 20240101")[0][0] == 0
+    assert q(test_db, "SELECT COUNT(*) FROM fact_flights")[0][0] == 5
+
+
+def test_load_month_rejects_bad_file_name(test_db, tiny_month, tmp_path):
+    rid, aid = load_dimensions(test_db, tiny_month.parent)
+    odd = tmp_path / "flights_jan.parquet"
+    odd.write_bytes(tiny_month.read_bytes())
+    with pytest.raises(ValueError, match="bts_flights_YYYY_MM"):
+        load_month(test_db, odd, rid, aid)
+
+
+def _report(path, months):
+    pd.DataFrame({"File": ["bts_flights_%s.csv" % m for m in months],
+                  "Rows_Clean": [6] * len(months), "Cancelled": [1] * len(months),
+                  "Diverted": [1] * len(months),
+                  "Delayed_15": [1] * len(months)}).to_csv(path, index=False)
+
+
+def test_verify_db_month_missing_from_report(test_db, tiny_month, tmp_path):
+    rid, aid = load_dimensions(test_db, tiny_month.parent)
+    load_month(test_db, tiny_month, rid, aid)
+    rep = tmp_path / "r.csv"
+    _report(rep, ["2024_02"])
+    with pytest.raises(ValueError, match="2024_01"):
+        verify(test_db, rep)
+
+
+def test_verify_requested_month_missing_from_report(test_db, tiny_month, tmp_path):
+    rid, aid = load_dimensions(test_db, tiny_month.parent)
+    load_month(test_db, tiny_month, rid, aid)
+    rep = tmp_path / "r.csv"
+    _report(rep, ["2024_01"])
+    with pytest.raises(ValueError, match="2024_03"):
+        verify(test_db, rep, ["2024_01", "2024_03"])
