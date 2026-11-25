@@ -21,7 +21,7 @@ COLUMN_ORDER = [
     "CRSElapsedTime", "ActualElapsedTime", "AirTime",
     "CarrierDelay", "WeatherDelay", "NASDelay", "SecurityDelay",
     "LateAircraftDelay",
-    "CancellationReason", "FlightStatus", "DepHour", "ArrHour",
+    "CancellationCode", "CancellationReason", "FlightStatus", "DepHour", "ArrHour",
 ]
 
 
@@ -32,7 +32,7 @@ def _row(**kw):
         DepDel15=0.0, ArrDel15=0.0, Cancelled=False, Diverted=False,
         CarrierDelay=0.0, WeatherDelay=0.0, NASDelay=0.0,
         SecurityDelay=0.0, LateAircraftDelay=0.0,
-        CancellationReason=None, FlightStatus="On Time",
+        CancellationCode=None, CancellationReason=None, FlightStatus="On Time",
     )
     base.update(kw)
     return base
@@ -74,7 +74,8 @@ def _build():
              ActualElapsedTime=NAN, AirTime=NAN, Cancelled=True,
              CarrierDelay=NAN, WeatherDelay=NAN, NASDelay=NAN,
              SecurityDelay=NAN, LateAircraftDelay=NAN,
-             CancellationReason="Weather", FlightStatus="Cancelled"),
+             CancellationCode="B", CancellationReason="Weather",
+             FlightStatus="Cancelled"),
         # 4. diverted
         _row(DayofMonth=4, DayOfWeek=4, FlightDate="2024-01-04",
              Reporting_Airline="DL", Tail_Number="N654DL",
@@ -131,6 +132,7 @@ def _build():
         "CarrierDelay": "float32", "WeatherDelay": "float32",
         "NASDelay": "float32", "SecurityDelay": "float32",
         "LateAircraftDelay": "float32",
+        "CancellationCode": "category",
         "CancellationReason": "category", "FlightStatus": "category",
     }
     df = df.astype(types)
