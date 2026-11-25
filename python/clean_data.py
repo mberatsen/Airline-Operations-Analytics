@@ -8,9 +8,13 @@ For each monthly CSV in data/raw/ this script:
   - adds readable fields: CancellationReason, FlightStatus, DepHour, ArrHour
   - sets delay-cause minutes to 0 for flights that arrived normally
   - drops duplicate rows and rows missing key fields
+  - normalizes tail numbers (uppercase, leading "N")
+  - adds UTC timestamps (scheduled/actual departure and arrival)
   - writes data/processed/flights/<same name>.parquet
 
 A per-file log is saved to docs/cleaning_report.csv.
+Arrival times are checked against each airport's time zone and the result
+is saved to docs/timezone_check.csv (the run fails if any airport is under 99%).
 
 Usage:
   python python/clean_data.py              # clean every file not yet cleaned
@@ -20,8 +24,12 @@ Usage:
 
 import sys
 from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
+
+from build_timezones import load_timezones
+from utc import add_utc_columns, check_arrivals
 
 # 1. Locate project folders
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,8 +114,23 @@ def hhmm_to_hour(series):
     return ((series // 100) % 24).astype("Int8")
 
 
-def clean_file(path):
-    """Clean one monthly file. Returns (DataFrame, log dict)."""
+def normalize_tail(s):
+    """Uppercase, strip spaces, and add a leading N. Missing stays missing."""
+    s = s.astype("string").str.strip().str.upper()
+    s = s.where(s != "", pd.NA)
+    return s.where(s.isna() | s.str.startswith("N"), "N" + s)
+
+
+def clean_file(
+    path: Path, tz: Optional[Dict[str, str]] = None
+) -> Tuple[pd.DataFrame, dict]:
+    """Clean one monthly file. Returns (DataFrame, log dict).
+
+    tz maps airport code -> IANA zone; loaded when not given.
+    The month's arrival check is returned in log["_tz_check"].
+    """
+    if tz is None:
+        tz = load_timezones()
     df = pd.read_csv(path, usecols=list(COLUMNS), dtype=COLUMNS)
     log = {"File": path.name, "Rows_Raw": len(df)}
 
@@ -145,7 +168,6 @@ def clean_file(path):
         .map(CANCELLATION_REASONS)
         .astype("category")
     )
-    df = df.drop(columns="CancellationCode")
 
     status = pd.Series("On Time", index=df.index)
     status[df["ArrDel15"] == 1] = "Delayed"
@@ -156,7 +178,15 @@ def clean_file(path):
     df["DepHour"] = hhmm_to_hour(df["CRSDepTime"])
     df["ArrHour"] = hhmm_to_hour(df["CRSArrTime"])
 
+    # 9. Tail numbers: BTS drops the leading N for some carriers
+    df["Tail_Number"] = normalize_tail(df["Tail_Number"])
+
     df = df.reset_index(drop=True)
+
+    # 10. UTC timestamps, then check arrivals against each airport's time zone
+    df, utc_stats = add_utc_columns(df, tz)
+    log.update(utc_stats)
+    log["_tz_check"] = check_arrivals(df, tz)
 
     log["Rows_Clean"] = len(df)
     log["Cancelled"] = int(df["Cancelled"].sum())
@@ -165,6 +195,37 @@ def clean_file(path):
     log["Missing_Tail_Number"] = int(df["Tail_Number"].isna().sum())
 
     return df, log
+
+
+PARTIAL_MIN_FLIGHTS = 200
+
+
+def save_timezone_check(checks, full_run, check_path):
+    """Combine arrival checks per airport and fail under 99%.
+
+    Full run: save the combined table to check_path, then fail for any airport
+    under 99%. Partial run (some files skipped or filtered out): the existing
+    file is left untouched, since a few months alone would give misleading
+    percentages, but airports with at least 200 flights in this run are still
+    checked against the 99% limit.
+    """
+    tzc = pd.concat(checks).groupby("Dest", as_index=False)[["Flights", "Matched"]].sum()
+    tzc["Match_Percent"] = (100.0 * tzc["Matched"] / tzc["Flights"].where(tzc["Flights"] > 0)).round(2)
+    tzc = tzc.sort_values("Match_Percent")
+
+    if full_run:
+        tzc.to_csv(check_path, index=False)
+        print(f"Time zone check saved to: {check_path}")
+        judged = tzc
+    else:
+        print("Time zone check file NOT updated: this run did not clean every raw file.")
+        judged = tzc[tzc["Flights"] >= PARTIAL_MIN_FLIGHTS]
+
+    bad = judged[judged["Match_Percent"] < 99]
+    if len(bad):
+        listing = ", ".join(f"{r.Dest} ({r.Match_Percent}%)" for r in bad.itertuples())
+        raise RuntimeError(f"Arrival time check under 99% for: {listing}")
+    return tzc if full_run else None
 
 
 def main():
@@ -181,7 +242,9 @@ def main():
 
     print(f"Cleaning {len(files)} file(s) -> {OUT}")
 
+    tz = load_timezones()
     logs = []
+    checks = []
     for path in files:
         target = OUT / (path.stem + ".parquet")
 
@@ -189,7 +252,8 @@ def main():
             print(f"Skipping {path.name} (already cleaned, use --force to redo)")
             continue
 
-        df, log = clean_file(path)
+        df, log = clean_file(path, tz)
+        checks.append(log.pop("_tz_check"))
         df.to_parquet(target, index=False)
 
         log["Parquet_MB"] = round(target.stat().st_size / 1e6, 1)
@@ -205,7 +269,7 @@ def main():
         print("Nothing new to clean.")
         return
 
-    # 9. Save the cleaning log, keeping entries for files not cleaned this run
+    # 11. Save the cleaning log, keeping entries for files not cleaned this run
     report_path = DOCS / "cleaning_report.csv"
     report = pd.DataFrame(logs)
 
@@ -215,10 +279,16 @@ def main():
         report = pd.concat([old, report], ignore_index=True)
 
     report = report.sort_values("File")
+    for col in ["DST_Nonexistent", "DST_Ambiguous", "Arrival_Fallback"]:
+        report[col] = report[col].astype("Int64")
     report.to_csv(report_path, index=False)
 
     print(f"\nTotal clean rows (this run): {sum(l['Rows_Clean'] for l in logs):,}")
     print(f"Report saved to: {report_path}")
+
+    # 12. Time zone check: only meaningful when this run cleaned every raw file
+    all_raw = sorted(RAW.glob("*.csv"))
+    save_timezone_check(checks, len(logs) == len(all_raw), DOCS / "timezone_check.csv")
 
 
 if __name__ == "__main__":
